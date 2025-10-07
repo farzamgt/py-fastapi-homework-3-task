@@ -119,28 +119,28 @@ async def activate_user(
         )
     )
     activation_token = result_token.scalar_one_or_none()
-
     if not activation_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired activation token."
         )
-    if ensure_utc(activation_token.expires_at) < datetime.now(timezone.utc):
-        await db.delete(activation_token)
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired activation token."
-        )
+
     user = activation_token.user
     if user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User account is already active."
         )
+    if ensure_utc(activation_token.expires_at) < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired activation token."
+        )
 
     user.is_active = True
-    await db.delete(activation_token)
+    await db.execute(
+        delete(ActivationTokenModel).where(ActivationTokenModel.user_id == user.id)
+    )
     await db.commit()
 
     return MessageResponseSchema(
@@ -169,6 +169,7 @@ async def reset_user_password(
         )
         reset_token = PasswordResetTokenModel(user=user)
         db.add(reset_token)
+        await db.flush()
         await db.commit()
 
     return MessageResponseSchema(
@@ -209,7 +210,7 @@ async def reset_user_password_complete(
     if not reset_token:
         await db.execute(
             delete(PasswordResetTokenModel)
-            .where(PasswordResetTokenModel.user == user)
+            .where(PasswordResetTokenModel.user_id == user.id)
         )
         await db.commit()
         raise HTTPException(
@@ -288,7 +289,8 @@ async def user_login(
         await db.commit()
         return UserLoginResponseSchema(
             access_token=access_token,
-            refresh_token=refresh_token
+            refresh_token=refresh_token,
+            token_type="bearer"
         )
     except SQLAlchemyError:
         await db.rollback()
@@ -309,21 +311,20 @@ async def refresh_user_access_token(
         jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager)
 ):
     try:
-        jwt_manager.decode_refresh_token(request_data.refresh_token)
+        payload = jwt_manager.decode_refresh_token(request_data.refresh_token)
+        user_id_from_token = payload.get("user_id")
     except TokenExpiredError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Token has expired."
         )
-    except InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid refresh token."
-        )
 
     result_token = await db.execute(
         select(RefreshTokenModel)
-        .where(RefreshTokenModel.token == request_data.refresh_token)
+        .where(
+            RefreshTokenModel.token == request_data.refresh_token,
+            RefreshTokenModel.user_id == user_id_from_token
+        )
     )
     refresh_token = result_token.scalar_one_or_none()
     if not refresh_token:
@@ -332,11 +333,7 @@ async def refresh_user_access_token(
             detail="Refresh token not found."
         )
 
-    result_user = await db.execute(
-        select(UserModel)
-        .where(UserModel.id == refresh_token.user_id)
-    )
-    user = result_user.scalar_one_or_none()
+    user = await db.get(UserModel, user_id_from_token)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -349,6 +346,9 @@ async def refresh_user_access_token(
             "email": user.email
         }
     )
+
     return TokenRefreshResponseSchema(
-        access_token=new_access_token
+        access_token=new_access_token,
+        refresh_token=request_data.refresh_token,
+        token_type="bearer"
     )

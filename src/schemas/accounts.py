@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
 
-from database import accounts_validators
+from database.validators import accounts as accounts_validators
 
 
 class UserRegistrationRequestSchema(BaseModel):
