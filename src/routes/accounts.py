@@ -187,10 +187,7 @@ async def reset_user_password_complete(
         db: AsyncSession = Depends(get_db)
 ):
     result_user = await db.execute(
-        select(UserModel)
-        .where(
-            UserModel.email == request_data.email
-        )
+        select(UserModel).where(UserModel.email == request_data.email)
     )
     user = result_user.scalar_one_or_none()
     if not user or not user.is_active:
@@ -200,8 +197,7 @@ async def reset_user_password_complete(
         )
 
     result_token = await db.execute(
-        select(PasswordResetTokenModel)
-        .where(
+        select(PasswordResetTokenModel).where(
             PasswordResetTokenModel.user == user,
             PasswordResetTokenModel.token == request_data.token
         )
@@ -209,16 +205,18 @@ async def reset_user_password_complete(
     reset_token = result_token.scalar_one_or_none()
     if not reset_token:
         await db.execute(
-            delete(PasswordResetTokenModel)
-            .where(PasswordResetTokenModel.user_id == user.id)
+            delete(PasswordResetTokenModel).where(
+                PasswordResetTokenModel.user_id == user.id
+            )
         )
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid email or token."
         )
+
     if ensure_utc(reset_token.expires_at) < datetime.now(timezone.utc):
-        await db.delete(reset_token)
+        db.delete(reset_token)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -226,8 +224,8 @@ async def reset_user_password_complete(
         )
 
     try:
-        user.password = request_data.password
-        await db.delete(reset_token)
+        user._hashed_password = hash_password(request_data.password)
+        db.delete(reset_token)
         await db.commit()
         return MessageResponseSchema(
             message="Password reset successfully."
@@ -242,7 +240,7 @@ async def reset_user_password_complete(
 
 @router.post(
     path="/login/",
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_200_OK,
     response_model=UserLoginResponseSchema
 )
 async def user_login(
@@ -252,8 +250,7 @@ async def user_login(
         settings: BaseAppSettings = Depends(get_settings)
 ):
     result_user = await db.execute(
-        select(UserModel)
-        .where(UserModel.email == request_data.email)
+        select(UserModel).where(UserModel.email == request_data.email)
     )
     user = result_user.scalar_one_or_none()
     if not user or not user.verify_password(request_data.password):
@@ -268,16 +265,10 @@ async def user_login(
         )
 
     access_token = jwt_manager.create_access_token(
-        data={
-            "user_id": user.id,
-            "email": user.email
-        }
+        data={"user_id": user.id, "email": user.email}
     )
     refresh_token = jwt_manager.create_refresh_token(
-        data={
-            "user_id": user.id,
-            "email": user.email
-        }
+        data={"user_id": user.id, "email": user.email}
     )
     try:
         refresh_token_obj = RefreshTokenModel.create(
@@ -301,7 +292,7 @@ async def user_login(
 
 
 @router.post(
-    path="/refresh/",
+    path="/api/v1/accounts/refresh/",
     status_code=status.HTTP_200_OK,
     response_model=TokenRefreshResponseSchema
 )
@@ -320,8 +311,7 @@ async def refresh_user_access_token(
         )
 
     result_token = await db.execute(
-        select(RefreshTokenModel)
-        .where(
+        select(RefreshTokenModel).where(
             RefreshTokenModel.token == request_data.refresh_token,
             RefreshTokenModel.user_id == user_id_from_token
         )
@@ -341,14 +331,9 @@ async def refresh_user_access_token(
         )
 
     new_access_token = jwt_manager.create_access_token(
-        data={
-            "user_id": user.id,
-            "email": user.email
-        }
+        data={"user_id": user.id, "email": user.email}
     )
 
     return TokenRefreshResponseSchema(
-        access_token=new_access_token,
-        refresh_token=request_data.refresh_token,
-        token_type="bearer"
+        access_token=new_access_token
     )
